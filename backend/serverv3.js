@@ -114,7 +114,6 @@ async function handleUserMessage(userPhone,message){
   let reply="";
 
   try{
-    // === STAGE LOGIC ===
     if(session.stage==="start"){
       if(text.includes("termin")){ reply="Klar! Für wann möchten Sie den Termin vereinbaren?"; session.stage="awaiting_date"; }
       else{
