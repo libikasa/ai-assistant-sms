@@ -134,40 +134,52 @@ async function handleUserMessage(userId, message) {
   let reply = "";
 
   try {
-    if (session.stage === "start") {
-      if (text.includes("termin")) {
+    // ==========================
+    // STAGE: start / awaiting_date
+    // ==========================
+    if (session.stage === "start" || session.stage === "awaiting_date") {
+      if (text.includes("termin") && session.stage === "start") {
         reply = "Klar! Für wann möchten Sie den Termin vereinbaren?";
         session.stage = "awaiting_date";
       } else {
-        const prompt = `
-        Nutzer: "${message}"
-        Du bist ein freundlicher Immobilienberater. Antworte kurz, natürlich und hilfsbereit.
-        `;
-        const aiRes = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: prompt }],
-        });
-        reply = aiRes.choices[0].message.content.trim();
+        // Datum und Zeit gleichzeitig erkennen
+        const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
+        const timeMatch = text.match(/\d{1,2}(:\d{2})?/);
+
+        if (dateMatch) session.data.date = dateMatch[0];
+        if (timeMatch) session.data.time = timeMatch[0];
+
+        if (session.data.date && session.data.time) {
+          reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
+          session.stage = "awaiting_duration";
+        } else if (!session.data.date) {
+          reply = "Für wann möchten Sie den Termin vereinbaren? (TT.MM.JJJJ)";
+          session.stage = "awaiting_date";
+        } else if (!session.data.time) {
+          reply = `Super! Zu welcher Uhrzeit am ${session.data.date} würde es Ihnen passen?`;
+          session.stage = "awaiting_time";
+        }
       }
-    } else if (session.stage === "awaiting_date") {
-      const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
-      if (dateMatch) {
-        session.data.date = dateMatch[0];
-        reply = `Super! Zu welcher Uhrzeit am ${dateMatch[0]} würde es Ihnen passen?`;
-        session.stage = "awaiting_time";
-      } else {
-        reply = "Bitte geben Sie ein Datum an, z. B. 08.11.2025.";
-      }
-    } else if (session.stage === "awaiting_time") {
+    }
+
+    // ==========================
+    // STAGE: awaiting_time
+    // ==========================
+    else if (session.stage === "awaiting_time") {
       const timeMatch = text.match(/\d{1,2}(:\d{2})?/);
       if (timeMatch) {
         session.data.time = timeMatch[0];
-        reply = "Perfekt. Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
+        reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
         session.stage = "awaiting_duration";
       } else {
-        reply = "Bitte geben Sie eine Uhrzeit an, z. B. 10:00 Uhr.";
+        reply = `Bitte geben Sie eine Uhrzeit an, z. B. 10:00 Uhr.`;
       }
-    } else if (session.stage === "awaiting_duration") {
+    }
+
+    // ==========================
+    // STAGE: awaiting_duration
+    // ==========================
+    else if (session.stage === "awaiting_duration") {
       const durMatch = text.match(/\d+/);
       if (durMatch) {
         session.data.duration = parseInt(durMatch[0]);
@@ -176,7 +188,12 @@ async function handleUserMessage(userId, message) {
       } else {
         reply = "Wie lange soll der Termin dauern (in Minuten)?";
       }
-    } else if (session.stage === "awaiting_email") {
+    }
+
+    // ==========================
+    // STAGE: awaiting_email
+    // ==========================
+    else if (session.stage === "awaiting_email") {
       const emailMatch = text.match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
       if (emailMatch) {
         session.data.email = emailMatch[0];
@@ -187,38 +204,57 @@ async function handleUserMessage(userId, message) {
       }
     }
 
+    // ==========================
+    // STAGE: creating
+    // ==========================
     if (session.stage === "creating") {
       const { date, time, duration, email } = session.data;
-      const start = parseGermanDateTime(date, time);
-      const end = new Date(start.getTime() + (duration || 30) * 60000);
-      const startIso = toLocalISOStringWithOffset(start);
-      const endIso = toLocalISOStringWithOffset(end);
+      try {
+        const start = parseGermanDateTime(date, time);
+        const end = new Date(start.getTime() + (duration || 30) * 60000);
+        const startIso = toLocalISOStringWithOffset(start);
+        const endIso = toLocalISOStringWithOffset(end);
 
-      const free = await isSlotFree(oauth2Client, startIso, endIso);
-      if (!free) {
-        reply = "⚠️ Dieser Zeitraum ist leider schon belegt. Bitte schlagen Sie eine andere Zeit vor.";
-        session.stage = "awaiting_time";
-      } else {
-        const event = await createEvent(oauth2Client, {
-          summary: "Beratungstermin zur Finanzierung",
-          startIso,
-          endIso,
-          attendeeEmail: email,
-        });
+        const free = await isSlotFree(oauth2Client, startIso, endIso);
+        if (!free) {
+          reply = "⚠️ Dieser Zeitraum ist leider schon belegt. Bitte schlagen Sie eine andere Zeit vor.";
+          session.stage = "awaiting_time";
+        } else {
+          const event = await createEvent(oauth2Client, {
+            summary: "Beratungstermin zur Finanzierung",
+            startIso,
+            endIso,
+            attendeeEmail: email,
+          });
 
-        const meetLink = event.hangoutLink || event.conferenceData?.entryPoints?.[0]?.uri || "kein Link verfügbar";
-        reply = `✅ Termin am ${date} um ${time} wurde erfolgreich eingetragen.\n📧 Einladung an ${email}.\n🔗 Google Meet Link: ${meetLink}`;
-        session.stage = "completed";
+          const meetLink = event.hangoutLink || event.conferenceData?.entryPoints?.[0]?.uri || "kein Link verfügbar";
+          reply = `✅ Termin am ${date} um ${time} wurde erfolgreich eingetragen.\n📧 Einladung an ${email}.\n🔗 Google Meet Link: ${meetLink}`;
+          session.stage = "completed";
+        }
+      } catch (err) {
+        console.error(err);
+        reply = "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
+        session.stage = "awaiting_email"; // zurücksetzen auf letzte Eingabe
       }
     }
+
+    // ==========================
+    // STAGE: completed
+    // ==========================
+    else if (session.stage === "completed") {
+      reply = "✅ Der Termin wurde bereits vereinbart. Möchten Sie noch etwas besprechen?";
+    }
+
+    // Session speichern
+    sessions.set(userId, session);
+    return reply;
+
   } catch (err) {
     console.error("❌ Chat-Fehler:", err);
-    reply = "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
+    return "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
   }
-
-  sessions.set(userId, session);
-  return reply;
 }
+
 
 // === Webchat Endpoint ===
 app.post("/chat", async (req, res) => {
