@@ -1,20 +1,25 @@
 {
-  "name": "ai-assistant-backend",
+  "name": "ai-assistant-sms",
   "version": "1.0.0",
   "type": "module",
+  "description": "AI-Assistent für Terminvereinbarung via SMS/Webhook",
+  "main": "backend/serverv3.js",
   "scripts": {
     "start": "node serverv3.js",
     "dev": "nodemon serverv3.js"
   },
+  "author": "Lisa Goetz",
+  "license": "MIT",
   "dependencies": {
-    "chrono-node": "^2.9.0",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
-    "dotenv": "^16.6.1",
-    "express": "^4.21.2",
-    "googleapis": "^123.0.0",
-    "openai": "^6.8.1"
+    "dotenv": "^16.1.4",
+    "express": "^4.18.2",
+    "googleapis": "^121.0.0",
+    "openai": "^4.9.0",
+    "twilio": "^5.10.4"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.1.1"
   }
 }
