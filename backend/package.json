@@ -1,0 +1,20 @@
+{
+  "name": "ai-assistant-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node serverv3.js",
+    "dev": "nodemon serverv3.js"
+  },
+  "dependencies": {
+    "chrono-node": "^2.9.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "googleapis": "^123.0.0",
+    "openai": "^6.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
