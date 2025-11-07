@@ -128,11 +128,11 @@ async function handleUserMessage(userId, message) {
 
   oauth2Client.setCredentials(tokens);
 
-  // Session laden oder neu anlegen
+  // Session laden oder neu erstellen
   const session = sessions.get(userId) || { stage: "start", data: {} };
-  sessions.set(userId, session); // sofort speichern
+  sessions.set(userId, session);
 
-  // Nachricht bereinigen für Datum/Uhrzeit-Erkennung
+  // Nachricht bereinigen für Datum/Uhrzeit
   const cleanedText = (message || "").replace(/\b(um|gegen|Uhr)\b/gi, "").trim();
   const textLower = cleanedText.toLowerCase();
   let reply = "";
@@ -142,27 +142,21 @@ async function handleUserMessage(userId, message) {
     // Stage: start / awaiting_date
     // ==========================
     if (session.stage === "start" || session.stage === "awaiting_date") {
-      if (textLower.includes("termin") && session.stage === "start") {
-        reply = "Klar! Für wann möchten Sie den Termin vereinbaren? (TT.MM.JJJJ)";
+      const dateMatch = cleanedText.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
+      const timeMatch = cleanedText.match(/(\d{1,2})(?::(\d{2}))?/);
+
+      if (dateMatch) session.data.date = dateMatch[0];
+      if (timeMatch) session.data.time = `${timeMatch[1]}:${timeMatch[2] || "00"}`;
+
+      if (!session.data.date) {
+        reply = "Für wann möchten Sie den Termin vereinbaren? (TT.MM.JJJJ)";
         session.stage = "awaiting_date";
+      } else if (!session.data.time) {
+        reply = `Zu welcher Uhrzeit am ${session.data.date} möchten Sie den Termin? (z. B. 10:00)`;
+        session.stage = "awaiting_time";
       } else {
-        // Datum + Zeit erkennen
-        const dateMatch = cleanedText.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
-        const timeMatch = cleanedText.match(/\d{1,2}(:\d{2})?/);
-
-        if (dateMatch) session.data.date = dateMatch[0];
-        if (timeMatch) session.data.time = timeMatch[0];
-
-        if (session.data.date && session.data.time) {
-          reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
-          session.stage = "awaiting_duration";
-        } else if (!session.data.date) {
-          reply = "Für wann möchten Sie den Termin vereinbaren? (TT.MM.JJJJ)";
-          session.stage = "awaiting_date";
-        } else if (!session.data.time) {
-          reply = `Super! Zu welcher Uhrzeit am ${session.data.date} würde es Ihnen passen?`;
-          session.stage = "awaiting_time";
-        }
+        reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
+        session.stage = "awaiting_duration";
       }
     }
 
@@ -170,9 +164,9 @@ async function handleUserMessage(userId, message) {
     // Stage: awaiting_time
     // ==========================
     else if (session.stage === "awaiting_time") {
-      const timeMatch = cleanedText.match(/\d{1,2}(:\d{2})?/);
+      const timeMatch = cleanedText.match(/(\d{1,2})(?::(\d{2}))?/);
       if (timeMatch) {
-        session.data.time = timeMatch[0];
+        session.data.time = `${timeMatch[1]}:${timeMatch[2] || "00"}`;
         reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
         session.stage = "awaiting_duration";
       } else {
@@ -216,7 +210,10 @@ async function handleUserMessage(userId, message) {
 
       if (!date || !time || !duration || !email) {
         reply = "❌ Es fehlen noch Informationen. Bitte geben Sie Datum, Uhrzeit, Dauer und E-Mail an.";
-        session.stage = !date ? "awaiting_date" : !time ? "awaiting_time" : !duration ? "awaiting_duration" : "awaiting_email";
+        session.stage = !date ? "awaiting_date"
+                     : !time ? "awaiting_time"
+                     : !duration ? "awaiting_duration"
+                     : "awaiting_email";
       } else {
         try {
           const start = parseGermanDateTime(date, time);
@@ -254,7 +251,7 @@ async function handleUserMessage(userId, message) {
       reply = "✅ Der Termin wurde bereits vereinbart. Möchten Sie noch etwas besprechen?";
     }
 
-    sessions.set(userId, session); // Session speichern
+    sessions.set(userId, session);
     return reply;
 
   } catch (err) {
