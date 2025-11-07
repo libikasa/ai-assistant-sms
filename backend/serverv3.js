@@ -124,27 +124,31 @@ function toLocalISOStringWithOffset(date) {
 // === Gemeinsame Logik für Chat & SMS ===
 async function handleUserMessage(userId, message) {
   const tokens = loadToken();
-  if (!tokens) {
-    return "❌ Bot ist nicht verbunden. Bitte Google Setup durchführen.";
-  }
+  if (!tokens) return "❌ Bot ist nicht verbunden. Bitte Google Setup durchführen.";
 
   oauth2Client.setCredentials(tokens);
+
+  // Session laden oder neu anlegen
   const session = sessions.get(userId) || { stage: "start", data: {} };
-  const text = (message || "").toLowerCase();
+  sessions.set(userId, session); // sofort speichern
+
+  // Nachricht bereinigen für Datum/Uhrzeit-Erkennung
+  const cleanedText = (message || "").replace(/\b(um|gegen|Uhr)\b/gi, "").trim();
+  const textLower = cleanedText.toLowerCase();
   let reply = "";
 
   try {
     // ==========================
-    // STAGE: start / awaiting_date
+    // Stage: start / awaiting_date
     // ==========================
     if (session.stage === "start" || session.stage === "awaiting_date") {
-      if (text.includes("termin") && session.stage === "start") {
-        reply = "Klar! Für wann möchten Sie den Termin vereinbaren?";
+      if (textLower.includes("termin") && session.stage === "start") {
+        reply = "Klar! Für wann möchten Sie den Termin vereinbaren? (TT.MM.JJJJ)";
         session.stage = "awaiting_date";
       } else {
-        // Datum und Zeit gleichzeitig erkennen
-        const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
-        const timeMatch = text.match(/\d{1,2}(:\d{2})?/);
+        // Datum + Zeit erkennen
+        const dateMatch = cleanedText.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
+        const timeMatch = cleanedText.match(/\d{1,2}(:\d{2})?/);
 
         if (dateMatch) session.data.date = dateMatch[0];
         if (timeMatch) session.data.time = timeMatch[0];
@@ -163,24 +167,24 @@ async function handleUserMessage(userId, message) {
     }
 
     // ==========================
-    // STAGE: awaiting_time
+    // Stage: awaiting_time
     // ==========================
     else if (session.stage === "awaiting_time") {
-      const timeMatch = text.match(/\d{1,2}(:\d{2})?/);
+      const timeMatch = cleanedText.match(/\d{1,2}(:\d{2})?/);
       if (timeMatch) {
         session.data.time = timeMatch[0];
         reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
         session.stage = "awaiting_duration";
       } else {
-        reply = `Bitte geben Sie eine Uhrzeit an, z. B. 10:00 Uhr.`;
+        reply = "Bitte geben Sie eine Uhrzeit an, z. B. 10:00 Uhr.";
       }
     }
 
     // ==========================
-    // STAGE: awaiting_duration
+    // Stage: awaiting_duration
     // ==========================
     else if (session.stage === "awaiting_duration") {
-      const durMatch = text.match(/\d+/);
+      const durMatch = cleanedText.match(/\d+/);
       if (durMatch) {
         session.data.duration = parseInt(durMatch[0]);
         reply = "Alles klar. Bitte geben Sie Ihre E-Mail-Adresse an, damit ich den Termin eintragen kann.";
@@ -191,10 +195,10 @@ async function handleUserMessage(userId, message) {
     }
 
     // ==========================
-    // STAGE: awaiting_email
+    // Stage: awaiting_email
     // ==========================
     else if (session.stage === "awaiting_email") {
-      const emailMatch = text.match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
+      const emailMatch = cleanedText.match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
       if (emailMatch) {
         session.data.email = emailMatch[0];
         reply = "Einen Moment, ich prüfe, ob der Termin verfügbar ist …";
@@ -205,48 +209,52 @@ async function handleUserMessage(userId, message) {
     }
 
     // ==========================
-    // STAGE: creating
+    // Stage: creating
     // ==========================
     if (session.stage === "creating") {
       const { date, time, duration, email } = session.data;
-      try {
-        const start = parseGermanDateTime(date, time);
-        const end = new Date(start.getTime() + (duration || 30) * 60000);
-        const startIso = toLocalISOStringWithOffset(start);
-        const endIso = toLocalISOStringWithOffset(end);
 
-        const free = await isSlotFree(oauth2Client, startIso, endIso);
-        if (!free) {
-          reply = "⚠️ Dieser Zeitraum ist leider schon belegt. Bitte schlagen Sie eine andere Zeit vor.";
-          session.stage = "awaiting_time";
-        } else {
-          const event = await createEvent(oauth2Client, {
-            summary: "Beratungstermin zur Finanzierung",
-            startIso,
-            endIso,
-            attendeeEmail: email,
-          });
+      if (!date || !time || !duration || !email) {
+        reply = "❌ Es fehlen noch Informationen. Bitte geben Sie Datum, Uhrzeit, Dauer und E-Mail an.";
+        session.stage = !date ? "awaiting_date" : !time ? "awaiting_time" : !duration ? "awaiting_duration" : "awaiting_email";
+      } else {
+        try {
+          const start = parseGermanDateTime(date, time);
+          const end = new Date(start.getTime() + duration * 60000);
+          const startIso = toLocalISOStringWithOffset(start);
+          const endIso = toLocalISOStringWithOffset(end);
 
-          const meetLink = event.hangoutLink || event.conferenceData?.entryPoints?.[0]?.uri || "kein Link verfügbar";
-          reply = `✅ Termin am ${date} um ${time} wurde erfolgreich eingetragen.\n📧 Einladung an ${email}.\n🔗 Google Meet Link: ${meetLink}`;
-          session.stage = "completed";
+          const free = await isSlotFree(oauth2Client, startIso, endIso);
+          if (!free) {
+            reply = "⚠️ Dieser Zeitraum ist leider schon belegt. Bitte schlagen Sie eine andere Zeit vor.";
+            session.stage = "awaiting_time";
+          } else {
+            const event = await createEvent(oauth2Client, {
+              summary: "Beratungstermin zur Finanzierung",
+              startIso,
+              endIso,
+              attendeeEmail: email,
+            });
+            const meetLink = event.hangoutLink || event.conferenceData?.entryPoints?.[0]?.uri || "kein Link verfügbar";
+            reply = `✅ Termin am ${date} um ${time} wurde erfolgreich eingetragen.\n📧 Einladung an ${email}.\n🔗 Google Meet Link: ${meetLink}`;
+            session.stage = "completed";
+          }
+        } catch (err) {
+          console.error(err);
+          reply = "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
+          session.stage = "awaiting_email"; // zurücksetzen auf letzte Eingabe
         }
-      } catch (err) {
-        console.error(err);
-        reply = "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
-        session.stage = "awaiting_email"; // zurücksetzen auf letzte Eingabe
       }
     }
 
     // ==========================
-    // STAGE: completed
+    // Stage: completed
     // ==========================
     else if (session.stage === "completed") {
       reply = "✅ Der Termin wurde bereits vereinbart. Möchten Sie noch etwas besprechen?";
     }
 
-    // Session speichern
-    sessions.set(userId, session);
+    sessions.set(userId, session); // Session speichern
     return reply;
 
   } catch (err) {
@@ -254,6 +262,7 @@ async function handleUserMessage(userId, message) {
     return "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
   }
 }
+
 
 
 // === Webchat Endpoint ===
