@@ -122,77 +122,71 @@ function toLocalISOStringWithOffset(date) {
 }
 
 // === Gemeinsame Logik für Chat & SMS ===
-async function handleUserMessage(userId, message) {
+// === Handle User Message (v2-style, Twilio-kompatibel) ===
+async function handleUserMessage(userPhone, message, userLang = "de") {
   const tokens = loadToken();
   if (!tokens) return "❌ Bot ist nicht verbunden. Bitte Google Setup durchführen.";
 
   oauth2Client.setCredentials(tokens);
 
-  // Session laden oder neu erstellen
-  const session = sessions.get(userId) || { stage: "start", data: {} };
-  sessions.set(userId, session);
+  // Session nach Telefonnummer
+  const session = sessions.get(userPhone) || { stage: "start", data: {} };
+  sessions.set(userPhone, session);
 
-  // Nachricht bereinigen für Datum/Uhrzeit
-  const cleanedText = (message || "").replace(/\b(um|gegen|Uhr)\b/gi, "").trim();
-  const textLower = cleanedText.toLowerCase();
+  const text = (message || "").toLowerCase();
   let reply = "";
 
   try {
-    // ==========================
-    // Stage: start / awaiting_date
-    // ==========================
-    if (session.stage === "start" || session.stage === "awaiting_date") {
-      const dateMatch = cleanedText.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
-      const timeMatch = cleanedText.match(/(\d{1,2})(?::(\d{2}))?/);
-
-      if (dateMatch) session.data.date = dateMatch[0];
-      if (timeMatch) session.data.time = `${timeMatch[1]}:${timeMatch[2] || "00"}`;
-
-      if (!session.data.date) {
-        reply = "Für wann möchten Sie den Termin vereinbaren? (TT.MM.JJJJ)";
+    if (session.stage === "start") {
+      if (text.includes("termin")) {
+        reply = "Klar! Für wann möchten Sie den Termin vereinbaren?";
         session.stage = "awaiting_date";
-      } else if (!session.data.time) {
-        reply = `Zu welcher Uhrzeit am ${session.data.date} möchten Sie den Termin? (z. B. 10:00)`;
-        session.stage = "awaiting_time";
       } else {
-        reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
-        session.stage = "awaiting_duration";
+        const prompt = `
+        Du bist ${BOT_NAME}, Mortgage Broker. Lead hat Interesse an einer Hypothek.
+        Antworte freundlich, stelle qualifizierte Fragen, leite ggf. zur Terminbuchung über.
+        Nutzer: "${message}" (${userLang})
+        `;
+        const aiRes = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+        });
+        reply = aiRes.choices[0].message.content.trim();
       }
     }
-
-    // ==========================
-    // Stage: awaiting_time
-    // ==========================
+    else if (session.stage === "awaiting_date") {
+      const dateMatch = text.match(/\d{1,2}\.\d{1,2}\.\d{4}/);
+      if (dateMatch) {
+        session.data.date = dateMatch[0];
+        reply = `Super! Zu welcher Uhrzeit am ${dateMatch[0]} möchten Sie den Termin?`;
+        session.stage = "awaiting_time";
+      } else {
+        reply = "Bitte geben Sie ein Datum an, z. B. 08.11.2025.";
+      }
+    }
     else if (session.stage === "awaiting_time") {
-      const timeMatch = cleanedText.match(/(\d{1,2})(?::(\d{2}))?/);
+      const timeMatch = text.match(/(\d{1,2})(?::(\d{2}))?/);
       if (timeMatch) {
         session.data.time = `${timeMatch[1]}:${timeMatch[2] || "00"}`;
-        reply = "Perfekt! Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
+        reply = "Perfekt. Wie lange soll das Meeting dauern? (z. B. 30 oder 60 Minuten)";
         session.stage = "awaiting_duration";
       } else {
         reply = "Bitte geben Sie eine Uhrzeit an, z. B. 10:00 Uhr.";
       }
     }
-
-    // ==========================
-    // Stage: awaiting_duration
-    // ==========================
     else if (session.stage === "awaiting_duration") {
-      const durMatch = cleanedText.match(/\d+/);
+      const durMatch = text.match(/\d+/);
       if (durMatch) {
-        session.data.duration = parseInt(durMatch[0]);
+        session.data.duration = parseInt(durMatch[0], 10);
         reply = "Alles klar. Bitte geben Sie Ihre E-Mail-Adresse an, damit ich den Termin eintragen kann.";
         session.stage = "awaiting_email";
       } else {
         reply = "Wie lange soll der Termin dauern (in Minuten)?";
       }
     }
-
-    // ==========================
-    // Stage: awaiting_email
-    // ==========================
     else if (session.stage === "awaiting_email") {
-      const emailMatch = cleanedText.match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
+      const emailMatch = text.match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
       if (emailMatch) {
         session.data.email = emailMatch[0];
         reply = "Einen Moment, ich prüfe, ob der Termin verfügbar ist …";
@@ -202,18 +196,12 @@ async function handleUserMessage(userId, message) {
       }
     }
 
-    // ==========================
-    // Stage: creating
-    // ==========================
+    // === Termin erstellen
     if (session.stage === "creating") {
       const { date, time, duration, email } = session.data;
-
       if (!date || !time || !duration || !email) {
-        reply = "❌ Es fehlen noch Informationen. Bitte geben Sie Datum, Uhrzeit, Dauer und E-Mail an.";
-        session.stage = !date ? "awaiting_date"
-                     : !time ? "awaiting_time"
-                     : !duration ? "awaiting_duration"
-                     : "awaiting_email";
+        reply = "❌ Es fehlen noch Informationen. Bitte Datum, Uhrzeit, Dauer und E-Mail angeben.";
+        session.stage = !date ? "awaiting_date" : !time ? "awaiting_time" : !duration ? "awaiting_duration" : "awaiting_email";
       } else {
         try {
           const start = parseGermanDateTime(date, time);
@@ -228,30 +216,27 @@ async function handleUserMessage(userId, message) {
           } else {
             const event = await createEvent(oauth2Client, {
               summary: "Beratungstermin zur Finanzierung",
-              startIso,
-              endIso,
+              startIso, endIso,
               attendeeEmail: email,
             });
             const meetLink = event.hangoutLink || event.conferenceData?.entryPoints?.[0]?.uri || "kein Link verfügbar";
-            reply = `✅ Termin am ${date} um ${time} wurde erfolgreich eingetragen.\n📧 Einladung an ${email}.\n🔗 Google Meet Link: ${meetLink}`;
+            reply = `✅ Termin am ${date} um ${time} wurde erfolgreich eingetragen.
+📧 Einladung an ${email} gesendet.
+🔗 Google Meet Link: ${meetLink}`;
             session.stage = "completed";
           }
         } catch (err) {
           console.error(err);
           reply = "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
-          session.stage = "awaiting_email"; // zurücksetzen auf letzte Eingabe
+          session.stage = "awaiting_email";
         }
       }
     }
-
-    // ==========================
-    // Stage: completed
-    // ==========================
     else if (session.stage === "completed") {
       reply = "✅ Der Termin wurde bereits vereinbart. Möchten Sie noch etwas besprechen?";
     }
 
-    sessions.set(userId, session);
+    sessions.set(userPhone, session);
     return reply;
 
   } catch (err) {
@@ -259,6 +244,21 @@ async function handleUserMessage(userId, message) {
     return "❌ Es gab einen Fehler bei der Verarbeitung Ihrer Anfrage.";
   }
 }
+
+// === Twilio Incoming SMS Endpoint ===
+app.post("/twilio/incoming-sms", async (req, res) => {
+  try {
+    const from = normalizePhone(req.body.From);
+    const body = req.body.Body || "";
+    const reply = await handleUserMessage(from, body);
+    await sendSms(from, reply);
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Server error");
+  }
+});
+
 
 
 
@@ -271,6 +271,7 @@ app.post("/chat", async (req, res) => {
 });
 
 // === Twilio Incoming SMS ===
+/*
 app.post("/twilio/incoming-sms", async (req, res) => {
   const from = req.body.From;
   const body = req.body.Body;
@@ -283,7 +284,7 @@ app.post("/twilio/incoming-sms", async (req, res) => {
   `;
 
   res.type("text/xml").send(twimlResponse);
-});
+});*/
 
 // === Lead-WebHook (GHL etc.) ===
 app.post("/lead", async (req, res) => {
